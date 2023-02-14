@@ -1,10 +1,12 @@
 // otherwise static keywords in STL libraries lead to errors
+#ifndef COW_NO_STYLE_GUIDE
 #define COW_NO_STYLE_GUIDE
-
 #include "include.cpp"
+#endif
 
 #include <numeric> // std::iota
 #include <vector>
+#include <queue>
 
 // axis-aligned bounding box
 struct AABB3D {
@@ -22,6 +24,9 @@ struct AABB3D {
 
 #define REAL_MAX DBL_MAX
 #define REAL_MIN DBL_MIN
+
+// if a node has less than this number of triangles, it is not split
+#define BVH_THRESHOLD 1
 
 void render_aabb3d(AABB3D aabb, mat4 PV, real size_in_pixels = 2., vec3 color = monokai.green, real alpha=1.) {
     eso_begin(PV, SOUP_LINES, size_in_pixels); {
@@ -81,7 +86,7 @@ AABB3D bbox_from_mesh_fast(IndexedTriangleMesh3D &mesh) {
 AABB3D bbox_from_triangles(IndexedTriangleMesh3D &mesh, std::vector<int> &triangle_indices) {
     AABB3D aabb = { { REAL_MAX, REAL_MAX, REAL_MAX }, { REAL_MIN, REAL_MIN, REAL_MIN } };
 
-    for (int i = 0; i < triangle_indices.size(); i++) {
+    for (size_t i = 0; i < triangle_indices.size(); i++) {
         auto &tri = mesh.triangle_indices[triangle_indices[i]];
 
         for (int j = 0; j < 3; j++) {
@@ -107,24 +112,38 @@ AABB3D bbox_from_mesh(IndexedTriangleMesh3D &mesh) {
     return bbox_from_triangles(mesh, triangle_indices);
 }
 
-// bounding volume hierarchy
-void bvh_app()
-{
-    // cone has 126 triangles. shouldn't be too slow
-    // IndexedTriangleMesh3D mesh = library.meshes.cone;
-    IndexedTriangleMesh3D mesh = library.meshes.teapot;
+struct bvh_node {
+    AABB3D bbox;
+    std::vector<int> triangle_indices;
+    int depth;
+    bvh_node *left;
+    bvh_node *right;
+};
 
-    // computer aabb bounding box
-    AABB3D aabb = bbox_from_mesh(mesh);
+bvh_node *build_bvh(IndexedTriangleMesh3D &mesh, std::vector<int> &triangle_indices, int depth = 0) {
+    bvh_node *node = new bvh_node;
 
-    int axis = aabb.longest_axis();
-    std::vector<std::pair<int, real>> tri_axis_med(mesh.num_triangles);
+    // std::cout << triangle_indices.size() << std::endl;
 
-    // TODO: calculate spatial median of the triangle
+    node->bbox = bbox_from_triangles(mesh, triangle_indices);
+    node->triangle_indices = triangle_indices;
+    node->depth = depth;
+    node->left = nullptr;
+    node->right = nullptr;
+
+    if (triangle_indices.size() <= BVH_THRESHOLD) {
+        return node;
+    }
+
+    // TODO: split using Surface Area Heuristic (SAH) to minimize the cost of tracing
+
+    int axis = node->bbox.longest_axis();
+    std::vector<std::pair<int, real>> tri_axis_med(triangle_indices.size());
+
     // calculate the median position on the longest axis for each triangle
     // if they are C++ std::vector's, we can use parallelized std::transform
-    for (int i = 0; i < mesh.num_triangles; i++) {
-        auto &tri = mesh.triangle_indices[i];
+    for (size_t i = 0; i < triangle_indices.size(); i++) {
+        auto &tri = mesh.triangle_indices[triangle_indices[i]];
 
         real a = mesh.vertex_positions[tri[0]][axis];
         real b = mesh.vertex_positions[tri[1]][axis];
@@ -142,26 +161,69 @@ void bvh_app()
     }
 
     // partition by average position on the longest axis
-    real mid = (aabb.max[axis] + aabb.min[axis]) / 2.0;
-    auto cutoff = std::partition(tri_axis_med.begin(), tri_axis_med.end(), [mid](std::pair<int, real>& a) {
-        return a.second < mid;
+    real mid = (node->bbox.max[axis] + node->bbox.min[axis]) / 2.0;
+    auto cutoff = std::stable_partition(tri_axis_med.begin(), tri_axis_med.end(), [mid](std::pair<int, real>& a) {
+        return a.second <= mid;
     });
+
+    // early stop if the partitioning is not effective
+    if (cutoff == tri_axis_med.begin() || cutoff == tri_axis_med.end()) {
+        // further splitting would only create nodes within this node's bounding box
+        // so we should stop splitting
+        return node;
+    }
 
     // extract indices
     std::vector<int> tri_left_idx;
-    std::transform(tri_axis_med.begin(), cutoff, std::back_inserter(tri_left_idx), [](std::pair<int, real>& a) {
-        return a.first;
-    });
-
     std::vector<int> tri_right_idx;
-    std::transform(cutoff, tri_axis_med.end(), std::back_inserter(tri_right_idx), [](std::pair<int, real>& a) {
-        return a.first;
+
+    std::transform(tri_axis_med.begin(), cutoff, std::back_inserter(tri_left_idx), [&triangle_indices](std::pair<int, real>& a) {
+        return triangle_indices[a.first];
+    });
+    std::transform(cutoff, tri_axis_med.end(), std::back_inserter(tri_right_idx), [&triangle_indices](std::pair<int, real>& a) {
+        return triangle_indices[a.first];
     });
 
+    // recursively build the left and right subtrees
+    node->left = build_bvh(mesh, tri_left_idx, depth + 1);
+    node->right = build_bvh(mesh, tri_right_idx, depth + 1);
 
-    // calculate aabb for these triangles
-    AABB3D aabb_small = bbox_from_triangles(mesh, tri_left_idx);
-    AABB3D aabb_small2 = bbox_from_triangles(mesh, tri_right_idx);
+    return node;
+}
+
+
+// bounding volume hierarchy
+void bvh_app()
+{
+    // cone has 126 triangles. shouldn't be too slow
+    // IndexedTriangleMesh3D mesh = library.meshes.cone;
+
+    // teapot has 6,320 triangles.
+    IndexedTriangleMesh3D mesh = library.meshes.teapot;
+
+    std::vector<int> triangle_indices(mesh.num_triangles);
+    std::iota(std::begin(triangle_indices), std::end(triangle_indices), 0);
+    auto bvh_root = build_bvh(mesh, triangle_indices);
+
+    // // get all bounding boxes at the leaf nodes of the BVH
+    std::vector<AABB3D> bboxes;
+    std::queue<bvh_node*> queue;
+    queue.push(bvh_root);
+
+    while (!queue.empty()) {
+        bvh_node *node = queue.front();
+        queue.pop();
+
+        if ((node->left == nullptr && node->right == nullptr) || node->depth >= 10) {
+            bboxes.push_back(node->bbox);
+        }
+        else {
+            queue.push(node->left);
+            queue.push(node->right);
+        }
+    }
+
+    // std::cout << "num bboxes: " << bboxes.size() << std::endl;
 
     // render
     Camera3D camera = { 8.0, RAD(0.0) };
@@ -175,15 +237,14 @@ void bvh_app()
         mat4 PV = P * V;
         mat4 M = M4_Identity();
 
-        gui_printf("mid: %f %f %f", mid, aabb.min[axis], aabb.max[axis]);
 
 
         mesh.draw(P, V, M);
 
         // drawing the bounding box
-        render_aabb3d(aabb, PV, 5.0);
-        render_aabb3d(aabb_small, PV, 3.0, monokai.yellow);
-        render_aabb3d(aabb_small2, PV, 3.0, monokai.blue);
+        for (auto &bbox : bboxes) {
+            render_aabb3d(bbox, PV, 3.0, monokai.yellow);
+        }
     }
 }
 
@@ -193,3 +254,8 @@ int main() {
     }
     return 0;
 }
+
+
+#undef BVH_THRESHOLD
+#undef REAL_MAX
+#undef REAL_MIN
