@@ -62,10 +62,23 @@ void render_aabb3d(AABB3D aabb, mat4 PV, real size_in_pixels = 2., vec3 color = 
     } eso_end();
 }
 
+void render_wireframe_indices(IndexedTriangleMesh3D &mesh, std::vector<int> &triangle_indices, mat4 P, mat4 V, mat4 M) {
+    eso_begin(P * V * M, SOUP_LINES, 4.0);
+    eso_color(monokai.red);
+    for (size_t i = 0; i < triangle_indices.size(); ++i) {
+        int idx = triangle_indices[i];
+        for (int j = 0; j < 3; ++j) {
+            eso_vertex(mesh.vertex_positions[mesh.triangle_indices[idx][j]]);
+            eso_vertex(mesh.vertex_positions[mesh.triangle_indices[idx][(j + 1) % 3]]);
+        }
+    }
+    eso_end();
+}
+
 // a bit faster than bbox_from_mesh, since it directly iterates over the vertices
 // Assumption: all vertices are used in the mesh triangles
 AABB3D bbox_from_mesh_fast(IndexedTriangleMesh3D &mesh) {
-    AABB3D aabb = { { REAL_MAX, REAL_MAX, REAL_MAX }, { REAL_MIN, REAL_MIN, REAL_MIN } };
+    AABB3D aabb = { { REAL_MAX, REAL_MAX, REAL_MAX }, { -REAL_MAX, -REAL_MAX, -REAL_MAX } };
 
     for (int i = 0; i < mesh.num_vertices; i++) {
         vec3 vert = mesh.vertex_positions[i];
@@ -84,7 +97,7 @@ AABB3D bbox_from_mesh_fast(IndexedTriangleMesh3D &mesh) {
 }
 
 AABB3D bbox_from_triangles(IndexedTriangleMesh3D &mesh, std::vector<int> &triangle_indices) {
-    AABB3D aabb = { { REAL_MAX, REAL_MAX, REAL_MAX }, { REAL_MIN, REAL_MIN, REAL_MIN } };
+    AABB3D aabb = { { REAL_MAX, REAL_MAX, REAL_MAX }, { -REAL_MAX, -REAL_MAX, -REAL_MAX } };
 
     for (size_t i = 0; i < triangle_indices.size(); i++) {
         auto &tri = mesh.triangle_indices[triangle_indices[i]];
@@ -149,15 +162,16 @@ bvh_node *build_bvh(IndexedTriangleMesh3D &mesh, std::vector<int> &triangle_indi
         real b = mesh.vertex_positions[tri[1]][axis];
         real c = mesh.vertex_positions[tri[2]][axis];
 
-        real max = a;
-        if (b > max) max = b;
-        if (c > max) max = c;
+        // real max = a;
+        // if (b > max) max = b;
+        // if (c > max) max = c;
 
-        real min = a;
-        if (b < min) min = b;
-        if (c < min) min = c;
+        // real min = a;
+        // if (b < min) min = b;
+        // if (c < min) min = c;
 
-        tri_axis_med[i] = { i, (max + min) / 2.0 };
+        // tri_axis_med[i] = { i, (max + min) / 2.0 };
+        tri_axis_med[i] = { i, (a + b + c) / 3.0};
     }
 
     // partition by average position on the longest axis
@@ -201,6 +215,8 @@ void bvh_app()
     // teapot has 6,320 triangles.
     IndexedTriangleMesh3D mesh = library.meshes.teapot;
 
+    // IndexedTriangleMesh3D mesh = library.meshes.bunny;
+
     std::vector<int> triangle_indices(mesh.num_triangles);
     std::iota(std::begin(triangle_indices), std::end(triangle_indices), 0);
     auto bvh_root = build_bvh(mesh, triangle_indices);
@@ -214,7 +230,7 @@ void bvh_app()
         bvh_node *node = queue.front();
         queue.pop();
 
-        if ((node->left == nullptr && node->right == nullptr) || node->depth >= 10) {
+        if ((node->left == nullptr && node->right == nullptr) || node->depth >= 8) {
             bboxes.push_back(node->bbox);
         }
         else {
@@ -238,8 +254,23 @@ void bvh_app()
         mat4 M = M4_Identity();
 
 
+        // drawing wireframe for all triangles
+        eso_begin(P * V * M, SOUP_LINES, 4.0);
+        eso_color(monokai.red);
+        for (int i = 0; i < mesh.num_triangles; ++i) {
+            for (int j = 0; j < 3; ++j) {
+                eso_vertex(mesh.vertex_positions[mesh.triangle_indices[i][j]]);
+                eso_vertex(mesh.vertex_positions[mesh.triangle_indices[i][(j + 1) % 3]]);
+            }
+        }
+        eso_end();
 
         mesh.draw(P, V, M);
+
+        // auto node = bvh_root->left->right->left;
+        // AABB3D bbox = bbox_from_triangles(mesh, node->triangle_indices);
+        // render_aabb3d(node->bbox, PV, 3.0, monokai.yellow);
+        // render_wireframe_indices(mesh, node->triangle_indices, P, V, M);
 
         // drawing the bounding box
         for (auto &bbox : bboxes) {
