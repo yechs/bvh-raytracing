@@ -229,6 +229,24 @@ struct Ray {
     vec3 dir;   // direction
 };
 
+bool intersection(AABB3D b, Ray r) {
+    // https://tavianator.com/2011/ray_box.html#fast-branchless-raybounding-box-intersections
+    double tx1 = (b.min.x - r.o.x) * r.dir.x;
+    double tx2 = (b.max.x - r.o.x) * r.dir.x;
+
+    double tmin = std::min(tx1, tx2);
+    double tmax = std::max(tx1, tx2);
+
+    double ty1 = (b.min.y - r.o.y) * r.dir.y;
+    double ty2 = (b.max.y - r.o.y) * r.dir.y;
+
+    tmin = std::max(tmin, std::min(ty1, ty2));
+    tmax = std::min(tmax, std::max(ty1, ty2));
+
+    return tmax >= tmin;
+}
+
+
 CastRayResult cast_ray(const Ray &ray, bvh_node *node, const IndexedTriangleMesh3D &mesh) {
     bool hit_at_least_one_triangle = false;
     double min_t = INFINITY;
@@ -318,7 +336,7 @@ void bvh_app()
         bvh_node *node = queue.front();
         queue.pop();
 
-        if ((node->left == nullptr && node->right == nullptr) || node->depth >= 8) {
+        if ((node->left == nullptr && node->right == nullptr) || node->depth >= 7) {
             bboxes.push_back(node->bbox);
         }
         else {
@@ -331,6 +349,12 @@ void bvh_app()
 
     // render
     Camera3D camera = { 8.0, RAD(0.0) };
+
+    Ray ray = {{1,1,5}, {-1./5,-1./4,-1}};
+    ray.dir = normalized(ray.dir);
+
+    // std::cout << "ray: " << ray.o << " " << ray.dir << std::endl;
+    std::cout << intersection(bvh_root->bbox, ray) << std::endl;
 
     while (cow_begin_frame()) {
         camera_move(&camera);
@@ -354,6 +378,18 @@ void bvh_app()
         eso_end();
 
         mesh.draw(P, V, M);
+
+
+        // render the ray
+        {
+            vec3 p = ray.o;
+            vec3 q = ray.o + 10 * ray.dir;
+            eso_begin(P * V * M, SOUP_LINES, 4.0);
+            eso_color(monokai.green);
+            eso_vertex(p);
+            eso_vertex(q);
+            eso_end();
+        }
 
         // auto node = bvh_root->left->right->left;
         // AABB3D bbox = bbox_from_triangles(mesh, node->triangle_indices);
