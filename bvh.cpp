@@ -1,6 +1,7 @@
 // otherwise static keywords in STL libraries lead to errors
 #ifndef COW_NO_STYLE_GUIDE
 #define COW_NO_STYLE_GUIDE
+#define SNAIL_I_SOLEMNLY_SWEAR_I_AM_UP_TO_NO_GOOD
 #include "include.cpp"
 #endif
 
@@ -418,9 +419,298 @@ void bvh_app()
     }
 }
 
+int S = 32;
+
+Texture color_buffer;
+void hw8a_set_pixel(int i, int j, vec3 color) {
+    color_buffer.data[4 * (j * S + i) + 0] = (unsigned char)(255 * CLAMP(color.r, 0, 1));
+    color_buffer.data[4 * (j * S + i) + 1] = (unsigned char)(255 * CLAMP(color.g, 0, 1));
+    color_buffer.data[4 * (j * S + i) + 2] = (unsigned char)(255 * CLAMP(color.b, 0, 1));
+    color_buffer.data[4 * (j * S + i) + 3] = 255;
+}
+
+struct {
+    bool draw_rays;
+    bool draw_shadow_rays;
+    bool draw_scene_3D = true;
+    bool fully_transparent_film_plane_bg;
+    bool draw_film_plane = true;
+    bool draw_cube_at_observer;
+    bool bunny_stress_test;
+    double renderer_distance_to_film_plane = 1; // for visualization only (doesn't impact rendering)
+} hw8a_tweaks;
+
+void hw8a_draw_textured_square(mat4 P, mat4 V, mat4 M, char *texture_filename) {
+    // please ignore; this function is hack-a-saurus rex
+    static IndexedTriangleMesh3D square;
+    if (!square.num_vertices) {
+        square = library.meshes.square;
+        square.vertex_normals = NULL;
+    }
+    square.draw(P, V, M, {}, texture_filename);
+};
+
+
+void ray_tracing_app() {
+    // mesh    -- the current scene
+    // light_p -- the position of the point light in world coordinates
+    // teapot has 6,320 triangles.
+    IndexedTriangleMesh3D mesh = library.meshes.teapot;
+    // IndexedTriangleMesh3D mesh = library.meshes.bunny;
+    vec3 light_p = V3(0, 2.5, 0);
+
+    // build BVH
+    std::vector<int> triangle_indices(mesh.num_triangles);
+    std::iota(std::begin(triangle_indices), std::end(triangle_indices), 0);
+    auto bvh_root = build_bvh(mesh, triangle_indices);
+
+    // render
+    // Camera3D camera = { 8.0, RAD(0.0) };
+    Camera3D renderer = { 4, RAD(60) };
+    Camera3D observer = { 6.5, RAD(60), RAD(30), RAD(-15), -2 };
+
+    { // (fine to ignore)
+        color_buffer= { "color_buffer", S, S, 4, (unsigned char *) malloc(S * S * 4) };
+        _mesh_texture_create(color_buffer.name, color_buffer.width, color_buffer.height, color_buffer.number_of_channels, color_buffer.data);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST); glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    }
+
+
+    while (cow_begin_frame()) {
+        { // tweaks (fine to ignore)
+            gui_checkbox("draw_rays", &hw8a_tweaks.draw_rays, 'z');
+            gui_checkbox("draw_shadow_rays", &hw8a_tweaks.draw_shadow_rays, 'a');
+            gui_checkbox("draw_film_plane", &hw8a_tweaks.draw_film_plane, 'x');
+            gui_checkbox("draw_scene_3D", &hw8a_tweaks.draw_scene_3D, 's');
+            gui_checkbox("draw_cube_at_observer", &hw8a_tweaks.draw_cube_at_observer, 'c');
+            gui_checkbox("fully_transparent_film_plane_bg", &hw8a_tweaks.fully_transparent_film_plane_bg, 't');
+            gui_checkbox("bunny_stress_test", &hw8a_tweaks.bunny_stress_test);
+
+            gui_slider("hw8a_tweaks.renderer_distance_to_film_plane", &hw8a_tweaks.renderer_distance_to_film_plane, 0, 5);
+            gui_slider("renderer.distance_to_origin", &renderer.persp_distance_to_origin, 1, 10);
+            gui_slider("renderer.theta", &renderer.theta, RAD(-30), RAD(30), true);
+            gui_slider("renderer.phi", &renderer.phi, RAD(-30), RAD(30), true);
+            gui_slider("renderer.angle_of_view", &renderer.angle_of_view, RAD(1), RAD(178), true);
+        }
+
+        // *_renderer                   -- matrices for the renderer
+        // *_observere                  -- matrices for the observer
+        // film_plane_side_length_world -- the length of the film plane in world coordinates
+        mat4 C_renderer, P_renderer, V_renderer;
+        mat4 P_observer, V_observer, PV_observer;
+        { // C_*, P_*, PV_*
+            { // reset
+                static Camera3D _renderer_0 = renderer;
+                if (gui_button("reset C_renderer", 'r')) {
+                    renderer = _renderer_0;
+                }
+            }
+            camera_move(&observer);
+            C_renderer = camera_get_C(&renderer);
+            P_renderer = _window_get_P_perspective(renderer.angle_of_view); // aspect <- 1
+            V_renderer = inverse(C_renderer);
+            { // C_observer <- C_renderer
+                static bool clicked;
+                bool clicked_this_frame;
+                bool selected;
+                bool released_this_frame = false;
+                {
+                    char *name = "hold to toggle C_observer <- C_renderer";
+                    clicked_this_frame = gui_button(name, COW_KEY_TAB);
+                    if (clicked_this_frame) {
+                        clicked = true;
+                    }
+                    // imgui.selected_widget_ID == COW1._gui_selected ??
+                    selected = (COW1._gui_selected == (void *) name);
+                    if (clicked && !selected) {
+                        clicked = false;
+                        released_this_frame = true;
+                    }
+                }
+
+                { // memcpy's
+                    static Camera3D safe;
+                    static bool draw_cube_push;
+                    if (clicked_this_frame) {
+                        memcpy(&safe, &observer, sizeof(Camera3D));
+                        draw_cube_push = hw8a_tweaks.draw_cube_at_observer;
+                        hw8a_tweaks.draw_cube_at_observer = false;
+                    }
+                    if (selected) {
+                        memcpy(&observer, &renderer, sizeof(Camera3D));
+                    }
+                    if (released_this_frame) {
+                        memcpy(&observer, &safe, sizeof(Camera3D));
+                        hw8a_tweaks.draw_cube_at_observer = draw_cube_push;
+                    }
+                }
+            }
+            P_observer = camera_get_P(&observer);
+            V_observer = camera_get_V(&observer);
+            PV_observer = P_observer * V_observer;
+        }
+
+
+        { // render (your work here!)
+            { // prep (fine to ignore)
+                { // clear color_buffer
+                    if (hw8a_tweaks.fully_transparent_film_plane_bg) {
+                        memset(color_buffer.data, 0, S * S * 4);
+                    } else {
+                        memset(color_buffer.data, 255, S * S * 4);
+                        int pixelIndex = 0;
+                        for (int j = 0; j < S; ++j) {
+                            for (int i = 0; i < S; ++i) {
+                                color_buffer.data[4 * pixelIndex++ + 3] = (((j + i) % 2) == 0) ? 200 : 220;
+                            }
+                        }
+                    }
+                }
+
+                { // light_p
+                    // TODO: remove the code that allows movement of the light
+                    // jank_widget_translate3D(PV_observer, 1, &light_p);
+                    soup_draw(PV_observer, SOUP_POINTS, 1, &light_p, NULL, monokai.white);
+                }
+            }
+
+            { // render (your work here!)
+                // renderer.angle_of_view -- _full_ (not half) angle of view of the renderer
+                // *_renderer             -- the axes and origin of the renderer
+                // NOTE: o_renderer is where rays originate from
+                // NOTE: -z_renderer points from o_renderer to the center of the film plane
+                vec3 x_renderer, y_renderer, z_renderer, o_renderer;
+                {
+                    auto system = camera_get_coordinate_system(&renderer);
+                    x_renderer = system.x;
+                    y_renderer = system.y;
+                    z_renderer = system.z;
+                    o_renderer = system.o;
+                }
+
+                { // write to color_buffer.data (your work here!)
+
+                    // gl_* will be useful for debugging direction (dir)
+                    eso_begin(PV_observer, SOUP_LINES); {
+
+
+                        for (int i = 0; i < S; ++i) {
+                            for (int j = 0; j < S; ++j) {
+
+                                double theta = renderer.angle_of_view;
+                                vec3 o = o_renderer;
+                                // vec3 dir = V3(i - double(S) / 2, j - double(S) / 2, -(double(S) / 2) / tan(theta / 2)); // student answer from board
+                                vec3 dir_tmp = V3(i - double(S) / 2, j - double(S) / 2, -(double(S) / 2) / tan(theta / 2)); // student answer from board
+                                vec3 dir = dir_tmp.x * x_renderer + dir_tmp.y * y_renderer + dir_tmp.z * z_renderer;
+
+                                // cast original ray
+                                // TODO: multiple ray by M^-1
+                                CastRayResult original = cast_ray({o, dir}, bvh_root, mesh);
+
+                                if (original.hit_at_least_one_triangle) {
+                                    vec3 L = light_p - original.p_hit; // light direction
+                                    vec3 N = original.N_hit;  // triangle normal at p_hit
+                                    bool triangle_is_facing_the_light = dot(N, L) > 0;
+
+                                    // cast shadow ray
+                                    // Note that o shifted a little towards L to prevent precision-induced intersection with self
+                                    CastRayResult shadow = cast_ray({original.p_hit + 0.0001 * L, L}, bvh_root, mesh);
+                                    bool shadow_ray_did_not_hit_anything = !shadow.hit_at_least_one_triangle;
+
+                                    // Blinn-Phong lighting
+                                    double ambient_strength = 0.1;
+                                    double diffuse_strength = 1.;
+                                    double specular_strength = .5;
+                                    double shininess = 32.0;
+
+                                    bool attenuation = true;
+                                    double attn_linear = 0.025;
+                                    double attn_quadratic = 0.0;  // only linear to prevent high attenuation
+
+                                    vec3 lightDir   = normalized(light_p - original.p_hit);
+                                    vec3 viewDir    = normalized(o_renderer - light_p);
+
+                                    // creative coding: inverse square law to control attenuation based on distance
+                                    double luminosity = 1;
+                                    double distance = norm(light_p - original.p_hit);
+                                    if (attenuation) luminosity = 1./(1 + attn_linear * distance + attn_quadratic * distance*distance);
+
+                                    // diffuse light
+                                    float diff = MAX(dot(original.N_hit, lightDir), 0.0);
+                                    vec3 diffuse = diffuse_strength * diff * original.base_color;
+
+                                    // specular light (Blinn-Phong)
+                                    vec3 halfwayDir = normalized(lightDir + viewDir);
+                                    float spec = pow(MAX(dot(original.N_hit, halfwayDir), 0.0), shininess);
+                                    vec3 specular = specular_strength * original.base_color * spec;
+
+                                    vec3 lighting_color = V3(ambient_strength, ambient_strength, ambient_strength) + luminosity * (diffuse + specular);
+
+                                    if (triangle_is_facing_the_light && shadow_ray_did_not_hit_anything) {
+                                        hw8a_set_pixel(i, j, lighting_color);
+                                        // hw8a_set_pixel(i, j, original.base_color);
+                                    } else {
+                                        hw8a_set_pixel(i, j, 0.5 * lighting_color);
+                                        // hw8a_set_pixel(i, j, 0.5 * original.base_color);
+                                        // draw shadow cast rays
+                                        if (hw8a_tweaks.draw_shadow_rays) {
+                                            // gl_color(original.base_color);
+                                            eso_color(shadow.base_color);
+                                            eso_vertex(original.p_hit);
+                                            eso_vertex(original.p_hit + shadow.min_t * L);
+                                        }
+                                    }
+
+                                    // draw original cast rays
+                                    if (hw8a_tweaks.draw_rays) {
+                                        eso_color(original.base_color);
+                                        eso_vertex(o);
+                                        eso_vertex(o + original.min_t * dir);
+                                    }
+                                }
+
+                            }
+                        }
+
+                    } eso_end();
+                }
+
+                { // send updated texture to the GPU (fine to ignore)
+                    _mesh_texture_sync_to_GPU(color_buffer.name, color_buffer.width, color_buffer.height, color_buffer.number_of_channels, color_buffer.data);
+                }
+            }
+        }
+
+        { // observe (fine to ignore)
+            if (hw8a_tweaks.draw_scene_3D) {
+                // soup_draw(PV_observer, SOUP_TRIANGLES, *mesh, V3(1, 0, 1));
+                mesh.draw(P_observer, V_observer, M4_Identity());
+            }
+            { // bespoke widget
+                library.soups.axes.draw(PV_observer * C_renderer);
+
+                if (hw8a_tweaks.draw_film_plane) {
+                    double film_plane_side_length_world = 2 * hw8a_tweaks.renderer_distance_to_film_plane * tan(renderer.angle_of_view / 2);
+                    mat4 M = C_renderer * M4_Translation(0, 0, -hw8a_tweaks.renderer_distance_to_film_plane) * M4_Scaling(film_plane_side_length_world / 2);
+                    hw8a_draw_textured_square(P_observer, V_observer, M, color_buffer.name);
+                    { // outline
+                        vec3 tmp[] = { { -1, -1, 0 }, { -1,  1, 0 }, { 1,  1, 0 }, {  1, -1, 0 }, };
+                        // TODO: the original provides no color
+                        soup_draw(P_observer * V_observer * M, SOUP_LINE_LOOP, 4, tmp, NULL, monokai.white);
+                    }
+                }
+                if (hw8a_tweaks.draw_cube_at_observer) {
+                    library.soups.box.draw(P_observer * C_renderer * M4_Scaling(.2), .5 * monokai.gray);
+                }
+            }
+        }
+    }
+}
+
 int main() {
     APPS {
         APP(bvh_app);
+        APP(ray_tracing_app);
     }
     return 0;
 }
