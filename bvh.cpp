@@ -205,17 +205,6 @@ bvh_node *build_bvh(IndexedTriangleMesh3D &mesh, std::vector<int> &triangle_indi
     return node;
 }
 
-/*
-Intersect (Ray ray, BVH node)
-    if (ray misses node.bbox) return;
-    if (node is a leaf node)
-        test intersection with all objs;
-        return closest intersection;
-    hit1 = Intersect (ray, node.child1);
-    hit2 = Intersect (ray, node.child2);
-    return closer of hitl, hitz;
-*/
-
 struct CastRayResult {
     bool hit_at_least_one_triangle;
     double min_t;       // the minimum distance to hit
@@ -248,68 +237,94 @@ bool intersection(AABB3D b, Ray r) {
 
 
 CastRayResult cast_ray(const Ray &ray, bvh_node *node, const IndexedTriangleMesh3D &mesh) {
-    bool hit_at_least_one_triangle = false;
-    double min_t = INFINITY;
-    vec3 pixel_color = {};
-    vec3 N_hit = {};
-    vec3 p_hit = {};
-
-    ASSERT(mesh.num_vertices % 3 == 0);
-    for (int idx = 0; idx < mesh.num_vertices; idx += 3) {
-        // three vertices defining the triangle
-        vec3 a = mesh.vertex_positions[idx];
-        vec3 b = mesh.vertex_positions[idx + 1];
-        vec3 c = mesh.vertex_positions[idx + 2];
-
-        vec3 color_a, color_b, color_c;
-        vec3 n;
-        {
-            vec3 e1 = b - a;
-            vec3 e2 = c - a;
-            n = normalized(cross(e1, e2));
-            if (mesh.vertex_colors != NULL) {
-                color_a = mesh.vertex_colors[idx + 0];
-                color_b = mesh.vertex_colors[idx + 1];
-                color_c = mesh.vertex_colors[idx + 2];
-            } else {
-                vec3 fallback_color = V3(.5, .5, .5) + .5 * n;
-                color_a = fallback_color;
-                color_b = fallback_color;
-                color_c = fallback_color;
-            }
-        }
-
-        mat4 A = M4(
-            a.x, b.x, c.x, ray.dir.x,
-            a.y, b.y, c.y, ray.dir.y,
-            a.z, b.z, c.z, ray.dir.z,
-            1, 1, 1, 0
-        );
-        vec4 z = V4(ray.o.x, ray.o.y, ray.o.z, 1);
-        // barycentric coords,  (-t)
-        auto ans = inverse(A) * z;
-
-        const double thresh = -0.0001;  // fix the problem of triangle intersects
-        bool hit = ans.x > thresh && ans.y > thresh && ans.z > thresh;
-        double t = -ans.w;
-
-        if (hit && t > 0) {
-            hit_at_least_one_triangle = true;
-            if (t < min_t) {
-                // this is correct interpolation ==> barycentric coord of actual triangle (not projection of triangle on screen)
-                pixel_color = (
-                    ans.x * color_a +
-                    ans.y * color_b +
-                    ans.z * color_c
-                );
-                min_t = t;
-                N_hit = n;
-                p_hit = ray.o + min_t * ray.dir;
-            }
-        }
+    // if the ray does not intersect the bounding box, do not bother going down
+    if (!intersection(node->bbox, ray)) {
+        return {false, INFINITY, {}, {}, {}};
     }
 
-    return {hit_at_least_one_triangle, min_t, pixel_color, N_hit, p_hit};
+    if (node->left == nullptr && node->right == nullptr) {
+        // leaf node, check all triangles inside
+        bool hit_at_least_one_triangle = false;
+        double min_t = INFINITY;
+        vec3 pixel_color = {};
+        vec3 N_hit = {};
+        vec3 p_hit = {};
+
+        for (size_t i = 0; i < node->triangle_indices.size(); i++) {
+            auto &tri = mesh.triangle_indices[node->triangle_indices[i]];
+
+            vec3 a = mesh.vertex_positions[tri[0]];
+            vec3 b = mesh.vertex_positions[tri[1]];
+            vec3 c = mesh.vertex_positions[tri[2]];
+
+            vec3 color_a, color_b, color_c;
+            vec3 n;
+            {
+                vec3 e1 = b - a;
+                vec3 e2 = c - a;
+                n = normalized(cross(e1, e2));
+                if (mesh.vertex_colors != NULL) {
+                    color_a = mesh.vertex_colors[tri[0]];
+                    color_b = mesh.vertex_colors[tri[1]];
+                    color_c = mesh.vertex_colors[tri[2]];
+                } else {
+                    vec3 fallback_color = V3(.5, .5, .5) + .5 * n;
+                    color_a = fallback_color;
+                    color_b = fallback_color;
+                    color_c = fallback_color;
+                }
+            }
+
+            mat4 A = M4(
+                a.x, b.x, c.x, ray.dir.x,
+                a.y, b.y, c.y, ray.dir.y,
+                a.z, b.z, c.z, ray.dir.z,
+                1, 1, 1, 0
+            );
+            vec4 z = V4(ray.o.x, ray.o.y, ray.o.z, 1);
+            // barycentric coords,  (-t)
+            auto ans = inverse(A) * z;
+
+            const double thresh = -0.0001;  // fix the problem of triangle intersects
+            bool hit = ans.x > thresh && ans.y > thresh && ans.z > thresh;
+            double t = -ans.w;
+
+            if (hit && t > 0) {
+                hit_at_least_one_triangle = true;
+                if (t < min_t) {
+                    // this is correct interpolation ==> barycentric coord of actual triangle (not projection of triangle on screen)
+                    pixel_color = (
+                        ans.x * color_a +
+                        ans.y * color_b +
+                        ans.z * color_c
+                    );
+                    min_t = t;
+                    N_hit = n;
+                    p_hit = ray.o + min_t * ray.dir;
+                }
+            }
+        }
+
+        return {hit_at_least_one_triangle, min_t, pixel_color, N_hit, p_hit};
+    } else {
+        // internal node, recurse down both children
+        auto hit_left = cast_ray(ray, node->left, mesh);
+        auto hit_right = cast_ray(ray, node->right, mesh);
+
+        if (hit_left.hit_at_least_one_triangle && hit_right.hit_at_least_one_triangle) {
+            if (hit_left.min_t < hit_right.min_t) {
+                return hit_left;
+            } else {
+                return hit_right;
+            }
+        } else if (hit_left.hit_at_least_one_triangle) {
+            return hit_left;
+        } else if (hit_right.hit_at_least_one_triangle) {
+            return hit_right;
+        } else {
+            return {false, INFINITY, {}, {}, {}};
+        }
+    }
 }
 
 // bounding volume hierarchy
