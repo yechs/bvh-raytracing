@@ -275,10 +275,9 @@ CastRayResult cast_ray(const Ray &ray, bvh_node *node, const IndexedTriangleMesh
                     color_b = mesh.vertex_colors[tri[1]];
                     color_c = mesh.vertex_colors[tri[2]];
                 } else {
-                    vec3 fallback_color = V3(.5, .5, .5) + .5 * n;
-                    color_a = fallback_color;
-                    color_b = fallback_color;
-                    color_c = fallback_color;
+                    color_a = V3(.5) + .5 * mesh.vertex_normals[tri[0]];
+                    color_b = V3(.5) + .5 * mesh.vertex_normals[tri[1]];
+                    color_c = V3(.5) + .5 * mesh.vertex_normals[tri[2]];
                 }
             }
 
@@ -461,8 +460,8 @@ void ray_tracing_app() {
     // mesh    -- the current scene
     // light_p -- the position of the point light in world coordinates
     // teapot has 6,320 triangles.
-    IndexedTriangleMesh3D mesh = library.meshes.teapot;
-    // IndexedTriangleMesh3D mesh = library.meshes.bunny;
+    // IndexedTriangleMesh3D mesh = library.meshes.teapot;
+    IndexedTriangleMesh3D mesh = library.meshes.bunny;
     vec3 light_p = V3(0, 2.5, 0);
 
     // build BVH
