@@ -219,22 +219,28 @@ struct Ray {
     vec3 dir;   // direction
 };
 
-bool intersection(AABB3D b, Ray r) {
-    // https://tavianator.com/2011/ray_box.html#fast-branchless-raybounding-box-intersections
-    double tx1 = (b.min.x - r.o.x) * r.dir.x;
-    double tx2 = (b.max.x - r.o.x) * r.dir.x;
+bool intersection(const AABB3D& box, const Ray& ray) {
+    // Calculate the intersection intervals for each axis
+    double tmin = (box.min.x - ray.o.x) / ray.dir.x;
+    double tmax = (box.max.x - ray.o.x) / ray.dir.x;
+    if (tmin > tmax) std::swap(tmin, tmax);
 
-    double tmin = std::min(tx1, tx2);
-    double tmax = std::max(tx1, tx2);
+    double tymin = (box.min.y - ray.o.y) / ray.dir.y;
+    double tymax = (box.max.y - ray.o.y) / ray.dir.y;
+    if (tymin > tymax) std::swap(tymin, tymax);
 
-    double ty1 = (b.min.y - r.o.y) * r.dir.y;
-    double ty2 = (b.max.y - r.o.y) * r.dir.y;
+    double tzmin = (box.min.z - ray.o.z) / ray.dir.z;
+    double tzmax = (box.max.z - ray.o.z) / ray.dir.z;
+    if (tzmin > tzmax) std::swap(tzmin, tzmax);
 
-    tmin = std::max(tmin, std::min(ty1, ty2));
-    tmax = std::min(tmax, std::max(ty1, ty2));
-
-    return tmax >= tmin;
+    // Check for intersection
+    double t_enter = std::max(tmin, std::max(tymin, tzmin));
+    double t_exit = std::min(tmax, std::min(tymax, tzmax));
+    return t_enter <= t_exit;
 }
+
+// intersect a ray with a bounding box AABB3D
+
 
 
 CastRayResult cast_ray(const Ray &ray, bvh_node *node, const IndexedTriangleMesh3D &mesh) {
@@ -419,7 +425,7 @@ void bvh_app()
     }
 }
 
-int S = 32;
+int S = 256;
 
 Texture color_buffer;
 void hw8a_set_pixel(int i, int j, vec3 color) {
@@ -603,11 +609,19 @@ void ray_tracing_app() {
                                 vec3 dir_tmp = V3(i - double(S) / 2, j - double(S) / 2, -(double(S) / 2) / tan(theta / 2)); // student answer from board
                                 vec3 dir = dir_tmp.x * x_renderer + dir_tmp.y * y_renderer + dir_tmp.z * z_renderer;
 
+                                if (hw8a_tweaks.draw_shadow_rays) {
+                                    eso_color(monokai.green);
+                                    eso_vertex(o);
+                                    eso_vertex(o + 0.5 * dir);
+                                }
+
+
                                 // cast original ray
                                 // TODO: multiple ray by M^-1
                                 CastRayResult original = cast_ray({o, dir}, bvh_root, mesh);
 
                                 if (original.hit_at_least_one_triangle) {
+/*
                                     vec3 L = light_p - original.p_hit; // light direction
                                     vec3 N = original.N_hit;  // triangle normal at p_hit
                                     bool triangle_is_facing_the_light = dot(N, L) > 0;
@@ -661,6 +675,9 @@ void ray_tracing_app() {
                                         }
                                     }
 
+*/
+                                    hw8a_set_pixel(i, j, original.base_color);
+
                                     // draw original cast rays
                                     if (hw8a_tweaks.draw_rays) {
                                         eso_color(original.base_color);
@@ -668,6 +685,8 @@ void ray_tracing_app() {
                                         eso_vertex(o + original.min_t * dir);
                                     }
                                 }
+
+
 
                             }
                         }
@@ -709,8 +728,8 @@ void ray_tracing_app() {
 
 int main() {
     APPS {
-        APP(bvh_app);
         APP(ray_tracing_app);
+        APP(bvh_app);
     }
     return 0;
 }
