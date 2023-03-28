@@ -5,9 +5,11 @@
 #include "include.cpp"
 #endif
 
-#include <numeric> // std::iota
-#include <vector>
+#include <algorithm> // std::stable_partition
+#include <cfloat>   // DBL_MAX
+#include <numeric>  // std::iota
 #include <queue>
+#include <vector>
 
 // axis-aligned bounding box
 struct AABB3D {
